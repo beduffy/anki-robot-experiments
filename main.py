@@ -29,14 +29,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
+from tensorboardX import SummaryWriter
 import cozmo
 from cozmo.util import degrees, distance_mm, speed_mmps
 
 #from PyTorch_YOLOv3 import detect_function
-from PyTorch_YOLOv3.detect_function import *
+from PyTorch_YOLOv3.detect_function import *  # needed to load in YOLO model
 
 NUM_DEGREES_ROTATE = 10
-STEPS_IN_EPISODE = 1000
+STEPS_IN_EPISODE = 100
 
 
 parser = argparse.ArgumentParser(description='PyTorch actor-critic example')
@@ -99,7 +100,7 @@ class PolicyConv(nn.Module):
 model = PolicyConv()
 optimizer = optim.Adam(model.parameters(), lr=3e-4)
 eps = np.finfo(np.float32).eps.item()
-
+writer = SummaryWriter()
 
 def select_action(state, flatten=False):
     if flatten:
@@ -179,10 +180,11 @@ def cup_in_middle_of_screen(img, dead_centre=False):
                     return True
     return False
 
-def get_reward(step_num, img):
-    reward = 0
+def get_reward(step_num, img, movement_reward=-0.01):
+    reward = movement_reward
     if step_num >= STEPS_IN_EPISODE - 1:
         done = True
+        reward = -10
     elif cup_in_middle_of_screen(img):
         done = True
         reward = 10
@@ -214,6 +216,9 @@ def cozmo_run_training_loop(robot: cozmo.robot.Robot):
 
     time.sleep(1)
     running_reward = 10
+    episode_lengths = []
+    episode_rewards = []
+    episode_total_rewards = []
 
     for episode_num in range(100):
         # state = env.reset()
@@ -233,10 +238,26 @@ def cozmo_run_training_loop(robot: cozmo.robot.Robot):
             reward, done = get_reward(step_num, state)
 
             model.rewards.append(reward)
+            episode_rewards.append(reward)
 
             if done:
-                print('Episode over, final reward: {}'.format(reward))
-                finish_episode()  # learn policy with backprop
+                total_reward_in_episode = sum(episode_rewards)
+                print('Episode over, final reward: {}. Step num: {}. Total reward: {}'.format(reward, step_num, total_reward_in_episode))
+                # book keeping
+                episode_lengths.append(step_num)
+                episode_total_rewards.append(total_reward_in_episode)
+
+                writer.add_scalar('total_reward_in_episode', total_reward_in_episode, episode_num)
+                writer.add_scalar('episode_lengths', step_num, episode_num)
+
+                writer.add_image('Image', state, episode_num)
+                writer.add_text('Text', 'text logged at step: {}. Episode num {}'.format(step_num, episode_num), step_num)
+
+                for name, param in model.named_parameters():
+                    writer.add_histogram(name, param.clone().cpu().data.numpy(), step_num)
+
+                episode_rewards = []
+                finish_episode()  # learn policy with backprop # todo rename
                 break
 
             if args.render:
@@ -247,6 +268,9 @@ def cozmo_run_training_loop(robot: cozmo.robot.Robot):
 
             if step_num % args.log_interval == 0:
                 print('Episode {}\t Step number: {:5d}\t'.format(episode_num, step_num))
+
+    writer.export_scalars_to_json("./all_scalars.json")
+    writer.close()
 
 if __name__ == '__main__':
     # cozmo.run_program(cozmo_run_training_loop) # whats the difference?
