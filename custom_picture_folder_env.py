@@ -1,7 +1,10 @@
+import random
 import glob
+
 import cv2
 
-class CustomPictureFolderEnv():
+
+class CustomPictureFolderEnv:
     def __init__(self, picture_folder_path='pictures/*', terminal_picture_idx=8):
         self.state_picture_index = 0
         self.all_pictures = self.read_all_pictures_states(picture_folder_path)
@@ -30,8 +33,13 @@ class CustomPictureFolderEnv():
             reward = 0
         return self.all_pictures[self.state_picture_index], reward, done, None
 
-    def reset(self):
-        self.state_picture_index = 0
+    def reset(self, random_start=False):
+        if random_start:
+            self.state_picture_index = random.randint(0, len(self.all_pictures) - 1)
+            print(self.state_picture_index, len(self.all_pictures))
+        else:
+            self.state_picture_index = 0
+        print('Start image on reset: {}'.format(self.all_picture_paths[self.state_picture_index]))
         return self.all_pictures[self.state_picture_index]
 
     def render(self):
@@ -39,8 +47,8 @@ class CustomPictureFolderEnv():
         k = cv2.waitKey(1)
 
     def read_all_pictures_states(self, picture_folder_path):
-        all_picture_paths = glob.glob(picture_folder_path)
-        all_pictures = [cv2.imread(path) for path in all_picture_paths]
+        self.all_picture_paths = glob.glob(picture_folder_path)
+        all_pictures = [cv2.imread(path) for path in self.all_picture_paths]
         # all_pictures = [cv2.resize(image, (80, 60)) for image in all_pictures]
 
         all_pictures_resized = []
@@ -48,7 +56,7 @@ class CustomPictureFolderEnv():
             try:
                 all_pictures_resized.append(cv2.resize(image, (80, 60)))
             except Exception as e:
-                print('Couldn\'t resize image with path: {}'.format(all_picture_paths[idx]))
+                print('Couldn\'t resize image with path: {}'.format(self.all_picture_paths[idx]))
                 print(e)
 
         # Loop through and show all images
@@ -61,6 +69,10 @@ class CustomPictureFolderEnv():
         return all_pictures_resized
 
 if __name__ == '__main__':
+    """
+    Human-control of environment with A and D keys. Press Q to quit. 
+    """
+
     env = CustomPictureFolderEnv(picture_folder_path='pictures/*')
 
     state, done = env.reset()

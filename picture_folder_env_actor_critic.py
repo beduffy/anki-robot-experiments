@@ -1,3 +1,4 @@
+import sys
 import argparse
 import gym
 import numpy as np
@@ -21,6 +22,8 @@ parser.add_argument('--render', action='store_true',
                     help='render the environment')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='interval between training status logs (default: 10)')
+parser.add_argument('--clip', type=float, default=0.25,
+                    help='gradient clipping')
 args = parser.parse_args()
 
 
@@ -49,25 +52,45 @@ class Policy(nn.Module):
         state_values = self.value_head(x)
         return F.softmax(action_scores, dim=-1), state_values
 
+def init_weights(m):
+    if type(m) == nn.Linear:
+        torch.nn.init.xavier_uniform(m.weight)
+        # m.bias.data.fill_(0.01)
+        m.bias.data.fill_(0.0)
 
 model = Policy()
-optimizer = optim.Adam(model.parameters(), lr=3e-2)
+model.apply(init_weights)
+# optimizer = optim.Adam(model.parameters(), lr=3e-2)
+optimizer = optim.Adam(model.parameters(), lr=3e-1)
 eps = np.finfo(np.float32).eps.item()
 
 
 def select_action(state, flatten=True):
     if flatten:
         state = state.flatten()
-    state = torch.from_numpy(state).float()
+
+    state = state / 255.0
+    state = torch.from_numpy(state).float() # .view(1, -1)
     probs, state_value = model(state)
-    m = Categorical(probs)
-    action = m.sample()
+    print(state.shape, probs + eps)
+    m = Categorical(probs + eps)
+    try:
+        action = m.sample()
+    except Exception as e:
+        print(e)
+        import pdb;pdb.set_trace()
+        sys.exit()
+
     model.saved_actions.append(SavedAction(m.log_prob(action), state_value))
     return action.item()
 
 
 def finish_episode():
     R = 0
+    if len(model.rewards) < 2:
+        del model.rewards[:]
+        del model.saved_actions[:]
+        return
     saved_actions = model.saved_actions
     policy_losses = []
     value_losses = []
@@ -79,11 +102,13 @@ def finish_episode():
     rewards = (rewards - rewards.mean()) / (rewards.std() + eps)
     for (log_prob, value), r in zip(saved_actions, rewards):
         reward = r - value.item()
-        policy_losses.append(-log_prob * reward)
-        value_losses.append(F.smooth_l1_loss(value, torch.tensor([r])))
+        policy_losses.append(-log_prob * reward  + eps)
+        value_losses.append(F.smooth_l1_loss(value, torch.tensor([r]))  + eps)
     optimizer.zero_grad()
-    loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum()
+    loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum() + eps
     loss.backward()
+
+    torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
     optimizer.step()
     del model.rewards[:]
     del model.saved_actions[:]
@@ -92,7 +117,7 @@ def finish_episode():
 def main():
     running_reward = 10
     for i_episode in count(4):
-        state = env.reset()
+        state = env.reset(random_start=True)
         for t in range(10000):  # Don't infinite loop while learning
             action = select_action(state)
             # print('Action: {}'.format(action))
