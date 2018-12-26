@@ -38,6 +38,7 @@ from PyTorch_YOLOv3.detect_function import *  # needed to load in YOLO model
 
 NUM_DEGREES_ROTATE = 10
 STEPS_IN_EPISODE = 100
+IMAGE_DIM_INPUT = (80, 60)
 
 
 parser = argparse.ArgumentParser(description='PyTorch actor-critic example')
@@ -75,12 +76,13 @@ class PolicyConv(nn.Module):
     def __init__(self):
         """
         (160 - 5 + 0 (padding)) / 2 + 1 = 78.5
+        (80 - 5 + 0 (padding)) / 2 + 1
         """
         super(PolicyConv, self).__init__()
         # self.affine1 = nn.Linear(14400, 128)
         self.conv1 = nn.Conv2d(3, 20, kernel_size=5, stride=2)
-        self.conv2 = nn.Conv2d(20, 20, kernel_size=5, stride=2) # todo maybe one more
-        self.affine1 = nn.Linear(37 * 27 * 20, 128)
+        self.conv2 = nn.Conv2d(20, 10, kernel_size=5, stride=2) # todo maybe one more
+        self.affine1 = nn.Linear(10 * 17 * 12, 128)  # 2040
         self.action_head = nn.Linear(128, 2)
         self.value_head = nn.Linear(128, 1)
 
@@ -114,12 +116,13 @@ def select_action(state, flatten=False):
     model.saved_actions.append(SavedAction(m.log_prob(action), state_value))
     return action.item()
 
-def finish_episode():  # todo rename
+def update_policy():
     print('Calculating returns, losses and optimising')
     print('raw rewards: {}'.format(model.rewards))
     if len(model.rewards) < 2:
         del model.rewards[:]
         del model.saved_actions[:]
+        # todo just don't do rewards.std? Or really shouldn't win with 1 action?
         return
     R = 0
     saved_actions = model.saved_actions
@@ -130,15 +133,15 @@ def finish_episode():  # todo rename
         R = r + args.gamma * R
         rewards.insert(0, R)
     rewards = torch.tensor(rewards)
-    print('raw returns: {}'.format(rewards))
+    # print('raw returns: {}'.format(rewards))
     rewards = (rewards - rewards.mean()) / (rewards.std() + eps)  # todo maybe don't
-    print('normalised returns: {}'.format(rewards))
+    # print('normalised returns: {}'.format(rewards))
     for (log_prob, value), r in zip(saved_actions, rewards):
         reward = r - value.item()
         policy_losses.append(-log_prob * reward)
         value_losses.append(F.smooth_l1_loss(value, torch.tensor([r]).view(value.size(0), -1)))
-    print('policy_losses: {}'.format(policy_losses))
-    print('value_losses: {}'.format(value_losses))
+    # print('policy_losses: {}'.format(policy_losses))
+    # print('value_losses: {}'.format(value_losses))
     optimizer.zero_grad()
     policy_loss = torch.stack(policy_losses).sum()
     value_loss = torch.stack(value_losses).sum()
@@ -149,6 +152,7 @@ def finish_episode():  # todo rename
     print('Policy loss sum: {}. Value loss: {}'.format(policy_loss.item(), value_loss.item()))
     del model.rewards[:]
     del model.saved_actions[:]
+    return policy_loss.item(), value_loss.item()
 
 # -------------------
 # Environment helper functions
@@ -159,11 +163,17 @@ def reset_env(robot):
     Rotate cozmo random amount
     """
     # todo possible reset: robot.go_to_pose(Pose(100, 100, 0, angle_z=degrees(45)), relative_to_robot=True).wait_for_completed() random is better
-    random_degrees = random.randint(-150, 150)
+    random_degrees = random.randint(-180, 180)
+    # Make sure turn is big enough
+    if abs(random_degrees) < 35:
+        if random_degrees < 0:
+            random_degrees = -35
+        else:
+            random_degrees = 35
     robot.turn_in_place(degrees(random_degrees)).wait_for_completed()
     print('Resetting environment, rotating Cozmo {} degrees'.format(random_degrees))
 
-def cup_in_middle_of_screen(img, dead_centre=False):
+def cup_in_middle_of_screen(img, dead_centre=True):
     """
     Use YOLOv3 PyTorch
     image is 416x416. centre is 208, 208. Solid centre of screen object is around ~?
@@ -193,7 +203,7 @@ def get_reward(step_num, img, movement_reward=-0.01):
 
     return reward, done
 
-def get_annotated_image(robot, resize=False, size=(160, 120), return_PIL=False):
+def get_annotated_image(robot, resize=False, size=IMAGE_DIM_INPUT, return_PIL=False):
     image = robot.world.latest_image
     # if _display_debug_annotations != DEBUG_ANNOTATIONS_DISABLED:
     #     image = image.annotate_image(scale=2)
@@ -226,7 +236,7 @@ def cozmo_run_training_loop(robot: cozmo.robot.Robot):
         state = get_annotated_image(robot)  # todo get default image?
         for step_num in range(STEPS_IN_EPISODE):
             # action = random.randint(0, 1)
-            action = select_action(cv2.resize(state, (160, 120)))
+            action = select_action(cv2.resize(state, IMAGE_DIM_INPUT))
             # todo put below into step function
             if action == 0:
                 print('Turning right')
@@ -242,29 +252,30 @@ def cozmo_run_training_loop(robot: cozmo.robot.Robot):
 
             if done:
                 total_reward_in_episode = sum(episode_rewards)
+                episode_rewards = []  # reset
                 print('Episode over, final reward: {}. Step num: {}. Total reward: {}'.format(reward, step_num, total_reward_in_episode))
                 # book keeping
                 episode_lengths.append(step_num)
-                episode_total_rewards.append(total_reward_in_episode)
-
-                writer.add_scalar('total_reward_in_episode', total_reward_in_episode, episode_num)
                 writer.add_scalar('episode_lengths', step_num, episode_num)
+                episode_total_rewards.append(total_reward_in_episode)
+                writer.add_scalar('episode_total_rewards', total_reward_in_episode, episode_num)
 
-                writer.add_image('Image', state, episode_num)
+                writer.add_image('Image', torch.from_numpy(state).permute(2, 0, 1), episode_num) # was state
                 writer.add_text('Text', 'text logged at step: {}. Episode num {}'.format(step_num, episode_num), step_num)
 
                 for name, param in model.named_parameters():
                     writer.add_histogram(name, param.clone().cpu().data.numpy(), step_num)
 
-                episode_rewards = []
-                finish_episode()  # learn policy with backprop # todo rename
+                policy_loss, value_loss = update_policy()  # learn policy with backprop
+                writer.add_scalar('policy_loss', policy_loss, episode_num)  # , episode_num)
+                writer.add_scalar('value_loss', value_loss, episode_num)
                 break
 
             if args.render:
                 img = Image.fromarray(state, 'RGB')
                 img.show()
 
-            running_reward = running_reward * 0.99 + step_num * 0.01
+            running_reward = running_reward * 0.99 + step_num * 0.01  # not used
 
             if step_num % args.log_interval == 0:
                 print('Episode {}\t Step number: {:5d}\t'.format(episode_num, step_num))
