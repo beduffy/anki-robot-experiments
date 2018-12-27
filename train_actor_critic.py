@@ -14,16 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
-import random
-import time
-import numpy as np
-import argparse
-from itertools import count
 from collections import namedtuple
 
 import cv2
-from PIL import Image
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -31,10 +24,10 @@ import torch.optim as optim
 from torch.distributions import Categorical
 from tensorboardX import SummaryWriter
 import cozmo
-from cozmo.util import degrees, distance_mm, speed_mmps
 
-#from PyTorch_YOLOv3 import detect_function
-from PyTorch_YOLOv3.detect_function import *  # needed to load in YOLO model
+#from PyTorch_YOLOv3 import detect_function  # should be able to swap to
+from PyTorch_YOLOv3.detect_function import *  # needed to load in YOLO model. Remove both?
+from anki_env import AnkiEnv
 
 NUM_DEGREES_ROTATE = 10
 STEPS_IN_EPISODE = 100
@@ -98,12 +91,6 @@ class PolicyConv(nn.Module):
         state_values = self.value_head(x)
         return F.softmax(action_scores, dim=-1), state_values
 
-
-model = PolicyConv()
-optimizer = optim.Adam(model.parameters(), lr=3e-4)
-eps = np.finfo(np.float32).eps.item()
-writer = SummaryWriter()
-
 def select_action(state, flatten=False):
     if flatten:
         state = state.flatten()
@@ -154,98 +141,20 @@ def update_policy():
     del model.saved_actions[:]
     return policy_loss.item(), value_loss.item()
 
-# -------------------
-# Environment helper functions
-# -------------------
-
-def reset_env(robot):
-    """
-    Rotate cozmo random amount
-    """
-    # todo possible reset: robot.go_to_pose(Pose(100, 100, 0, angle_z=degrees(45)), relative_to_robot=True).wait_for_completed() random is better
-    random_degrees = random.randint(-180, 180)
-    # Make sure turn is big enough
-    if abs(random_degrees) < 35:
-        if random_degrees < 0:
-            random_degrees = -35
-        else:
-            random_degrees = 35
-    robot.turn_in_place(degrees(random_degrees)).wait_for_completed()
-    print('Resetting environment, rotating Cozmo {} degrees'.format(random_degrees))
-
-def cup_in_middle_of_screen(img, dead_centre=True):
-    """
-    Use YOLOv3 PyTorch
-    image is 416x416. centre is 208, 208. Solid centre of screen object is around ~?
-    """
-
-    detections = detect_on_numpy_img(img)
-    if detections is not None:
-        for x1, y1, x2, y2, conf, cls_conf, cls_pred in detections:
-            if dead_centre:
-                if int(cls_pred.item()) == 41 and x1 > 108 and x2 < 308:
-                        return True
-            else:  # much easier, just have to see cup
-                if int(cls_pred.item()) == 41:
-                    return True
-    return False
-
-def get_reward(step_num, img, movement_reward=-0.01):
-    reward = movement_reward
-    if step_num >= STEPS_IN_EPISODE - 1:
-        done = True
-        reward = -10
-    elif cup_in_middle_of_screen(img):
-        done = True
-        reward = 10
-    else:
-        done = False
-
-    return reward, done
-
-def get_annotated_image(robot, resize=False, size=IMAGE_DIM_INPUT, return_PIL=False):
-    image = robot.world.latest_image
-    # if _display_debug_annotations != DEBUG_ANNOTATIONS_DISABLED:
-    #     image = image.annotate_image(scale=2)
-    # else:
-    image = image.raw_image
-    if resize:
-        image.thumbnail(size, Image.ANTIALIAS)
-    if return_PIL:
-        return image
-    return np.asarray(image)
-
 def cozmo_run_training_loop(robot: cozmo.robot.Robot):
-    robot = robot.wait_for_robot()
-    robot.enable_device_imu(True, True, True)
-    # Turn on image receiving by the camera
-    robot.camera.image_stream_enabled = True
+    env = AnkiEnv(robot)
 
-    robot.set_lift_height(0.0).wait_for_completed()
-    robot.set_head_angle(degrees(-.0)).wait_for_completed()
-
-    time.sleep(1)
     running_reward = 10
     episode_lengths = []
     episode_rewards = []
     episode_total_rewards = []
 
     for episode_num in range(100):
-        # state = env.reset()
-        reset_env(robot)
-        state = get_annotated_image(robot)  # todo get default image?
+        state = env.reset()
         for step_num in range(STEPS_IN_EPISODE):
-            # action = random.randint(0, 1)
+            # action = random.randint(0, 1)  # random actions
             action = select_action(cv2.resize(state, IMAGE_DIM_INPUT))
-            # todo put below into step function
-            if action == 0:
-                print('Turning right')
-                robot.turn_in_place(degrees(-NUM_DEGREES_ROTATE)).wait_for_completed()
-            elif action == 1:
-                print('Turning left')
-                robot.turn_in_place(degrees(NUM_DEGREES_ROTATE)).wait_for_completed()
-            state = get_annotated_image(robot) # todo don't resize here
-            reward, done = get_reward(step_num, state)
+            state, reward, done, _ = env.step(action)
 
             model.rewards.append(reward)
             episode_rewards.append(reward)
@@ -259,15 +168,15 @@ def cozmo_run_training_loop(robot: cozmo.robot.Robot):
                 writer.add_scalar('episode_lengths', step_num, episode_num)
                 episode_total_rewards.append(total_reward_in_episode)
                 writer.add_scalar('episode_total_rewards', total_reward_in_episode, episode_num)
-
-                writer.add_image('Image', torch.from_numpy(state).permute(2, 0, 1), episode_num) # was state
+                # writer.add_image('Image', torch.from_numpy(state).permute(2, 0, 1), episode_num)
+                writer.add_image('Image', state, episode_num) # was state
                 writer.add_text('Text', 'text logged at step: {}. Episode num {}'.format(step_num, episode_num), step_num)
 
                 for name, param in model.named_parameters():
                     writer.add_histogram(name, param.clone().cpu().data.numpy(), step_num)
 
                 policy_loss, value_loss = update_policy()  # learn policy with backprop
-                writer.add_scalar('policy_loss', policy_loss, episode_num)  # , episode_num)
+                writer.add_scalar('policy_loss', policy_loss, episode_num)
                 writer.add_scalar('value_loss', value_loss, episode_num)
                 break
 
@@ -284,6 +193,11 @@ def cozmo_run_training_loop(robot: cozmo.robot.Robot):
     writer.close()
 
 if __name__ == '__main__':
+    model = PolicyConv()
+    optimizer = optim.Adam(model.parameters(), lr=3e-4)
+    eps = np.finfo(np.float32).eps.item()
+    writer = SummaryWriter()
+
     # cozmo.run_program(cozmo_run_training_loop) # whats the difference?
     try:
         cozmo.connect(cozmo_run_training_loop)
