@@ -18,6 +18,7 @@ import sys
 # sys.path.append('../..')
 sys.path.append('/home/beduffy/all_projects/cozmo-anki-experiments/')
 
+import numpy as np
 import torch
 import torch.multiprocessing as mp
 import torch.optim as optim
@@ -60,7 +61,7 @@ parser.add_argument('--max-episode-length', type=int, default=1000,
                     help='maximum length of an episode (default: 1000000)')
 parser.add_argument('--natural-language', dest='natural-language', action='store_true',
                     help='')
-parser.set_defaults(natural_language=False)
+parser.set_defaults(natural_language=True)  # todo
 parser.add_argument('--no-shared', default=False,
                     help='use an optimizer without shared momentum.')
 parser.add_argument('-sync', '--synchronous', dest='synchronous', action='store_true',
@@ -82,18 +83,6 @@ parser.set_defaults(atari=False)
 parser.set_defaults(atari_render=False)
 
 
-from algorithms.a3c.envs import create_atari_env
-from algorithms.a3c.model import ActorCritic, A3C_LSTM_GA
-
-
-def ensure_shared_grads(model, shared_model):
-    for param, shared_param in zip(model.parameters(),
-                                   shared_model.parameters()):
-        if shared_param.grad is not None:
-            return
-        shared_param._grad = param.grad
-
-
 # def train(rank, args, shared_model, counter, lock, optimizer=None):
 def train(robot: cozmo.robot.Robot):
     rank = 0
@@ -104,11 +93,11 @@ def train(robot: cozmo.robot.Robot):
     # else:
     #     env = AI2ThorEnv(config_dict=args.config_dict)
 
-    env = AnkiEnv(robot)
+    env = AnkiEnv(robot, natural_language=args.natural_language)
     env.seed(args.seed + rank)
 
     if args.natural_language:
-        model = A3C_LSTM_GA(env.observation_space.shape[0], env.action_space.n, args.frame_dim)
+        model = A3C_LSTM_GA(env.observation_space.shape[0], env.action_space.n, args.frame_dim, len(env.word_to_idx)).float()
     else:
         model = ActorCritic(env.observation_space.shape[0], env.action_space.n, args.frame_dim)
 
@@ -117,14 +106,15 @@ def train(robot: cozmo.robot.Robot):
     model.train()
 
     state = env.reset()
+    if args.natural_language:
+        (state, instruction) = state
+        instruction_idx = []
+        for word in instruction.split(" "):
+            instruction_idx.append(env.word_to_idx[word])
+        instruction_idx = np.array(instruction_idx)
+        instruction_idx = torch.from_numpy(instruction_idx).view(1, -1)
+
     state = torch.from_numpy(state)
-    # (image, instruction) = env.reset()
-    # instruction_idx = []
-    # for word in instruction.split(" "):
-    #     instruction_idx.append(env.word_to_idx[word])
-    # instruction_idx = np.array(instruction_idx)
-    # image = torch.from_numpy(image)
-    # instruction_idx = torch.from_numpy(instruction_idx).view(1, -1)
     done = True
 
     # monitoring
@@ -159,7 +149,13 @@ def train(robot: cozmo.robot.Robot):
         for step in range(args.num_steps):
             episode_length += 1
             total_length += 1
-            value, logit, (hx, cx) = model((state.unsqueeze(0).float(), (hx, cx)))
+            if args.natural_language:
+                tx = torch.from_numpy(np.array([episode_length])).long()
+                value, logit, (hx, cx) = model((state.unsqueeze(0).float(),
+                                                instruction_idx.float(),
+                                                (tx, hx, cx)))
+            else:
+                value, logit, (hx, cx) = model((state.unsqueeze(0).float(), (hx, cx)))
             prob = F.softmax(logit, dim=-1)
             log_prob = F.log_softmax(logit, dim=-1)
             entropy = -(log_prob * prob).sum(1, keepdim=True)
@@ -170,9 +166,8 @@ def train(robot: cozmo.robot.Robot):
 
             action_int = action.numpy()[0][0].item()
             state, reward, done, _ = env.step(action_int)
-            # (image, _), reward, done = env.step(action)
-
-            done = done or episode_length >= args.max_episode_length
+            if args.natural_language:
+                state, instruction = state
 
             with lock:
                 counter.value += 1
@@ -184,6 +179,13 @@ def train(robot: cozmo.robot.Robot):
                 episode_total_rewards_list.append(total_reward_for_episode)
                 all_rewards_in_episode = []
                 state = env.reset()
+                if args.natural_language:
+                    state, instruction = state
+                    instruction_idx = []
+                    for word in instruction.split(" "):
+                        instruction_idx.append(env.word_to_idx[word])
+                    instruction_idx = np.array(instruction_idx)
+                    instruction_idx = torch.from_numpy(instruction_idx).view(1, -1)
                 print('Episode Over. Total Length: {}. Total reward for episode: {}'.format(
                                             total_length,  total_reward_for_episode))
                 print('Step no: {}. total length: {}'.format(episode_length, total_length))
@@ -207,7 +209,13 @@ def train(robot: cozmo.robot.Robot):
         # Backprop and optimisation
         R = torch.zeros(1, 1)
         if not done:  # to change last reward to predicted value to ....
-            value, _, _ = model((state.unsqueeze(0).float(), (hx, cx)))
+            if args.natural_language:
+                tx = torch.from_numpy(np.array([episode_length])).long()
+                value, logit, (hx, cx) = model((state.unsqueeze(0).float(),
+                                                instruction_idx.float(),
+                                                (tx, hx, cx)))
+            else:
+                value, _, _ = model((state.unsqueeze(0).float(), (hx, cx)))
             R = value.detach()
 
         values.append(R)
@@ -243,32 +251,16 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
-    args.config_dict = {'max_episode_length': args.max_episode_length,
-                        'natural_language': args.natural_language}
+    # args.config_dict = {'max_episode_length': args.max_episode_length,
+    #                     'natural_language': args.natural_language} # todo maybe this
     # env = AnkiEnv(config_dict=args.config_dict)
     # env = AnkiEnv()
     # args.frame_dim = env.config['resolution'][-1]
     args.frame_dim = 80
-
-    # if args.natural_language:
-    #     shared_model = A3C_LSTM_GA(env.observation_space.shape[0], env.action_space.n,
-    #                                args.frame_dim)
-    # else:
-    #     shared_model = ActorCritic(env.observation_space.shape[0], env.action_space.n,
-    #                                args.frame_dim)
-    # shared_model.share_memory()
-
-    # if args.no_shared:
-    #     optimizer = None
-    # else:
-    #     optimizer = my_optim.SharedAdam(shared_model.parameters(), lr=args.lr)
-    #     optimizer.share_memory()
-
     processes = []
-
     counter = mp.Value('i', 0)
     lock = mp.Lock()
-    # cozmo.run_program(train)
+    # cozmo.run_program(train)  # doesn't pass robot correctly
     try:
         cozmo.connect(train)
     except KeyboardInterrupt as e:

@@ -16,7 +16,7 @@ IMAGE_DIM_INPUT = (80, 80)  # will stretch a bit but for A3C
 
 
 class AnkiEnv(gym.Env):
-    def __init__(self, robot):
+    def __init__(self, robot, natural_language=False):
         self.robot = robot
         self.robot = self.robot.wait_for_robot()
         self.robot.enable_device_imu(True, True, True)
@@ -41,6 +41,18 @@ class AnkiEnv(gym.Env):
                                             # dtype=np.uint8)
         self.action_space = spaces.Discrete(2)
 
+        self.natural_language = natural_language
+        if self.natural_language:
+            # self.train_instructions = ['microwave', 'cup'] # todo begin simple
+            self.nlp_instructions = [
+                'Look at the green cup',
+                'Look at the yellow banana'  # hmm
+            ]
+            self.nlp_instruction_idx = random.randint(0, len(self.nlp_instructions) - 1)
+            self.word_to_idx = self.get_word_to_idx()
+
+            self.current_object_type = 'Microwave' if self.nlp_instruction_idx == 0 else 'Mug'
+
     def reset(self):
         """
         Rotate cozmo random amount
@@ -60,6 +72,11 @@ class AnkiEnv(gym.Env):
         state = self.get_annotated_image()
         state_preprocessed = cv2.resize(state, IMAGE_DIM_INPUT)
         state_preprocessed = np.moveaxis(state_preprocessed, 2, 0)
+        if self.natural_language:
+            self.nlp_instruction_idx = random.randint(0, len(self.nlp_instructions) - 1)
+            instruction = self.nlp_instructions[self.nlp_instruction_idx]
+            print('New instruction: {}'.format(instruction))
+            state_preprocessed = (state_preprocessed, instruction)
         return state_preprocessed
 
     def cup_in_middle_of_screen(self, img, dead_centre=True):
@@ -119,4 +136,16 @@ class AnkiEnv(gym.Env):
 
         state_preprocessed = cv2.resize(state, IMAGE_DIM_INPUT)
         state_preprocessed = np.moveaxis(state_preprocessed, 2, 0)
+        if self.natural_language:
+            instruction = self.nlp_instructions[self.nlp_instruction_idx]
+            state_preprocessed = (state_preprocessed, instruction)
         return state_preprocessed, reward, done, None
+
+    def get_word_to_idx(self):
+        word_to_idx = {}
+        for instruction_data in self.nlp_instructions:
+            instruction = instruction_data # todo actual json ['instruction']
+            for word in instruction.split(" "):
+                if word not in word_to_idx:
+                    word_to_idx[word] = len(word_to_idx)
+        return word_to_idx

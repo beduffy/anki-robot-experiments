@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 
 def calculate_lstm_input_size_after_4_conv_layers(frame_dim, stride=2, kernel_size=3, padding=1,
-                                     num_filters=32):
+                                     num_filters=32, num_layers=4):
     """
     Assumes square resolution image. Find LSTM size after 4 conv layers below in A3C using regular
     Convolution math. For example:
@@ -25,7 +25,8 @@ def calculate_lstm_input_size_after_4_conv_layers(frame_dim, stride=2, kernel_si
     width = (frame_dim - kernel_size + 2 * padding) // stride + 1
     width = (width - kernel_size + 2 * padding) // stride + 1
     width = (width - kernel_size + 2 * padding) // stride + 1
-    width = (width - kernel_size + 2 * padding) // stride + 1
+    if num_layers != 3:  ## todo doesn't work for GA
+        width = (width - kernel_size + 2 * padding) // stride + 1
 
     return width * width * num_filters
 
@@ -114,7 +115,7 @@ class ActorCritic(torch.nn.Module):
 
 class A3C_LSTM_GA(torch.nn.Module):
 
-    def __init__(self, num_input_channels, num_outputs, frame_dim):
+    def __init__(self, num_input_channels, num_outputs, frame_dim, num_words):
         super(A3C_LSTM_GA, self).__init__()
 
         # Image Processing
@@ -122,14 +123,11 @@ class A3C_LSTM_GA(torch.nn.Module):
         self.conv2 = nn.Conv2d(128, 64, kernel_size=4, stride=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=4, stride=2)
 
+        self.lstm_cell_size = calculate_lstm_input_size_after_4_conv_layers(frame_dim, num_layers=3)
+
         # Instruction Processing
         self.gru_hidden_size = 256
-        # self.input_size = args.input_size # todo
-        # self.input_size = 4 # todo change, currently "go to the microwave" 4 words
-        # self.input_size = 5 # #'Turn left 3 times', 'Turn right 3 times'
-        # self.input_size = 6  #['Go and look at microwave', 'Go and look at cup']
-        self.input_size = 2  # ['microwave', 'cup']
-        self.embedding = nn.Embedding(self.input_size, 32)
+        self.embedding = nn.Embedding(num_words, 32)
         self.gru = nn.GRU(32, self.gru_hidden_size)
 
         # Gated-Attention layers
@@ -139,12 +137,12 @@ class A3C_LSTM_GA(torch.nn.Module):
         self.time_emb_dim = 32
         self.time_emb_layer = nn.Embedding(
                 # args.max_episode_length+1, # todo feed in episode length
-                1000 + 1,
+                100 + 1, # todo change
                 self.time_emb_dim)
 
         # A3C-LSTM layers
-        # self.linear = nn.Linear(64 * 8 * 17, 256)
-        self.linear = nn.Linear(64 * 6 * 6, 256) # todo maybe 150, 150 res
+        # self.linear = nn.Linear(self.lstm_cell_size, 256) # todo maybe 150, 150 res
+        self.linear = nn.Linear(64 * 3 * 3, 256) # todo maybe 150, 150 res
         self.lstm = nn.LSTMCell(256, 256)
         self.critic_linear = nn.Linear(256 + self.time_emb_dim, 1)
         self.actor_linear = nn.Linear(256 + self.time_emb_dim, num_outputs)
@@ -166,36 +164,35 @@ class A3C_LSTM_GA(torch.nn.Module):
         x, input_inst, (tx, hx, cx) = inputs
 
         # Get the image representation
-        x = F.relu(self.conv1(x.double()))
+        x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x_image_rep = F.relu(self.conv3(x))
 
         # Get the instruction representation
-        encoder_hidden = torch.zeros(1, 1, self.gru_hidden_size).double()
+        encoder_hidden = torch.zeros(1, 1, self.gru_hidden_size)
         for i in range(input_inst.data.size(1)):
 
             # todo first unsqueeze should be sequence length!!!
             # but for now im gonna try just one word. todo check when i bring multi word sentences back
-            word_embedding = self.embedding(input_inst[0, i]).unsqueeze(0).unsqueeze(0)  # crazy todo
+            word_embedding = self.embedding(input_inst[0, i].long()).unsqueeze(0).unsqueeze(0)  # crazy todo
             word_embedding = word_embedding.expand(input_inst.data.size(1), -1, -1) # only change seq len dimension
             _, encoder_hidden = self.gru(word_embedding, encoder_hidden) # todo import pdb;pdb.set_trace(). see if this works nad two unsqueezes were wrong?
         x_instr_rep = encoder_hidden.view(encoder_hidden.size(1), -1)
         # todo try MLP above instead or just one layer
-
         # Get the attention vector from the instruction representation
         x_attention = F.sigmoid(self.attn_linear(x_instr_rep))
 
         # Gated-Attention
         x_attention = x_attention.unsqueeze(2).unsqueeze(3)
         # x_attention = x_attention.expand(1, 64, 8, 17)
-        x_attention = x_attention.expand(1, 64, 6, 6)
+        x_attention = x_attention.expand(1, 64, 3, 3) # 80x80 input
         assert x_image_rep.size() == x_attention.size()
-        x = x_image_rep*x_attention
+        x = x_image_rep * x_attention
         x = x.view(x.size(0), -1)
 
         # A3C-LSTM
         x = F.relu(self.linear(x))
-        hx, cx = self.lstm(x, (hx.double(), cx.double()))
+        hx, cx = self.lstm(x, (hx, cx))
         time_emb = self.time_emb_layer(tx)
         x = torch.cat((hx, time_emb.view(-1, self.time_emb_dim)), 1)
 
