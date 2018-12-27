@@ -153,7 +153,7 @@ def cozmo_run_training_loop(robot: cozmo.robot.Robot):
         state = env.reset()
         for step_num in range(STEPS_IN_EPISODE):
             # action = random.randint(0, 1)  # random actions
-            action = select_action(cv2.resize(state, IMAGE_DIM_INPUT))
+            action = select_action(state)
             state, reward, done, _ = env.step(action)
 
             model.rewards.append(reward)
