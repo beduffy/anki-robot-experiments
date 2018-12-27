@@ -11,7 +11,8 @@ from PyTorch_YOLOv3.detect_function import *  # needed to load in YOLO model
 
 NUM_DEGREES_ROTATE = 10
 STEPS_IN_EPISODE = 100
-IMAGE_DIM_INPUT = (80, 60)
+# IMAGE_DIM_INPUT = (80, 60)
+IMAGE_DIM_INPUT = (80, 80)  # will stretch a bit but for A3C
 
 
 class AnkiEnv(gym.Env):
@@ -36,8 +37,9 @@ class AnkiEnv(gym.Env):
         channels = 1 if self.config['grayscale'] else 3
         self.observation_space = spaces.Box(low=0, high=255,
                                             shape=(channels, self.config['resolution'][0],
-                                                   self.config['resolution'][1]),
-                                            dtype=np.uint8)
+                                                   self.config['resolution'][1]))#,
+                                            # dtype=np.uint8)
+        self.action_space = spaces.Discrete(2)
 
     def reset(self):
         """
@@ -56,7 +58,9 @@ class AnkiEnv(gym.Env):
         print('Resetting environment, rotating Cozmo {} degrees'.format(random_degrees))
         self.step_num = 0
         state = self.get_annotated_image()
-        return state
+        state_preprocessed = cv2.resize(state, IMAGE_DIM_INPUT)
+        state_preprocessed = np.moveaxis(state_preprocessed, 2, 0)
+        return state_preprocessed
 
     def cup_in_middle_of_screen(self, img, dead_centre=True):
         """
@@ -113,4 +117,6 @@ class AnkiEnv(gym.Env):
 
         self.step_num += 1
 
-        return state, reward, done, None
+        state_preprocessed = cv2.resize(state, IMAGE_DIM_INPUT)
+        state_preprocessed = np.moveaxis(state_preprocessed, 2, 0)
+        return state_preprocessed, reward, done, None

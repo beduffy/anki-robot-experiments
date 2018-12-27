@@ -21,15 +21,16 @@ sys.path.append('/home/beduffy/all_projects/cozmo-anki-experiments/')
 import torch
 import torch.multiprocessing as mp
 import torch.optim as optim
+import torch.nn.functional as F
 import cozmo
 
 # from gym_ai2thor.envs.ai2thor_env import AI2ThorEnv
 from anki_env import AnkiEnv
-from algorithms.a3c.envs import create_atari_env
-from algorithms.a3c import my_optim
+# from algorithms.a3c.envs import create_atari_env
+# from algorithms.a3c import my_optim
 from algorithms.a3c.model import ActorCritic, A3C_LSTM_GA
-from algorithms.a3c.test import test
-from algorithms.a3c.train import train
+# from algorithms.a3c.test import test
+# from algorithms.a3c.train import train
 
 # Based on
 # https://github.com/pytorch/examples/tree/master/mnist_hogwild
@@ -111,8 +112,7 @@ def train(robot: cozmo.robot.Robot):
     else:
         model = ActorCritic(env.observation_space.shape[0], env.action_space.n, args.frame_dim)
 
-    if optimizer is None:
-        optimizer = optim.Adam(shared_model.parameters(), lr=args.lr)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     model.train()
 
@@ -142,7 +142,7 @@ def train(robot: cozmo.robot.Robot):
     num_backprops = 0
     while True:
         # Sync with the shared model
-        model.load_state_dict(shared_model.state_dict())
+        # model.load_state_dict(shared_model.state_dict())
         if done:
             cx = torch.zeros(1, 256)
             hx = torch.zeros(1, 256)
@@ -248,24 +248,31 @@ if __name__ == '__main__':
     # env = AnkiEnv(config_dict=args.config_dict)
     # env = AnkiEnv()
     # args.frame_dim = env.config['resolution'][-1]
+    args.frame_dim = 80
 
-    if args.natural_language:
-        shared_model = A3C_LSTM_GA(env.observation_space.shape[0], env.action_space.n,
-                                   args.frame_dim)
-    else:
-        shared_model = ActorCritic(env.observation_space.shape[0], env.action_space.n,
-                                   args.frame_dim)
-    shared_model.share_memory()
+    # if args.natural_language:
+    #     shared_model = A3C_LSTM_GA(env.observation_space.shape[0], env.action_space.n,
+    #                                args.frame_dim)
+    # else:
+    #     shared_model = ActorCritic(env.observation_space.shape[0], env.action_space.n,
+    #                                args.frame_dim)
+    # shared_model.share_memory()
 
-    if args.no_shared:
-        optimizer = None
-    else:
-        optimizer = my_optim.SharedAdam(shared_model.parameters(), lr=args.lr)
-        optimizer.share_memory()
+    # if args.no_shared:
+    #     optimizer = None
+    # else:
+    #     optimizer = my_optim.SharedAdam(shared_model.parameters(), lr=args.lr)
+    #     optimizer.share_memory()
 
     processes = []
 
     counter = mp.Value('i', 0)
     lock = mp.Lock()
-    cozmo.run_program(train)
+    # cozmo.run_program(train)
+    try:
+        cozmo.connect(train)
+    except KeyboardInterrupt as e:
+        pass
+    except cozmo.ConnectionError as e:
+        sys.exit("A connection error occurred: %s" % e)
 
