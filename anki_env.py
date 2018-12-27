@@ -28,10 +28,22 @@ class AnkiEnv(gym.Env):
 
         self.step_num = 0
 
+        self.config = {
+            'grayscale': False,
+            'resolution': IMAGE_DIM_INPUT
+        }
+
+        channels = 1 if self.config['grayscale'] else 3
+        self.observation_space = spaces.Box(low=0, high=255,
+                                            shape=(channels, self.config['resolution'][0],
+                                                   self.config['resolution'][1]),
+                                            dtype=np.uint8)
+
     def reset(self):
         """
         Rotate cozmo random amount
         """
+        # todo needed to go back to the same starting position
         # todo possible reset: self.robot.go_to_pose(Pose(100, 100, 0, angle_z=degrees(45)), relative_to_robot=True).wait_for_completed() random is better. Not for other tasks
         random_degrees = random.randint(-180, 180)
         # Make sure turn is big enough
