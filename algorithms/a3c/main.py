@@ -5,8 +5,7 @@ Example of use:
 `cd algorithms/a3c`
 `python main.py`
 
-Runs A3C on our AI2ThorEnv wrapper with default params (4 processes). Optionally it can be
-run on any atari environment as well using the --atari and --atari-env-name params.
+Runs A3C on our custom environment for Cozmo (robot by anki) with only 1 process (so A2C essentially).
 """
 
 from __future__ import print_function
@@ -25,13 +24,8 @@ import torch.optim as optim
 import torch.nn.functional as F
 import cozmo
 
-# from gym_ai2thor.envs.ai2thor_env import AI2ThorEnv
 from anki_env import AnkiEnv
-# from algorithms.a3c.envs import create_atari_env
-# from algorithms.a3c import my_optim
 from algorithms.a3c.model import ActorCritic, A3C_LSTM_GA
-# from algorithms.a3c.test import test
-# from algorithms.a3c.train import train
 
 # Based on
 # https://github.com/pytorch/examples/tree/master/mnist_hogwild
@@ -57,43 +51,22 @@ parser.add_argument('--num-processes', type=int, default=4,
                     help='how many training processes to use (default: 1)')
 parser.add_argument('--num-steps', type=int, default=20,
                     help='number of forward steps in A3C (default: 20)')
-parser.add_argument('--max-episode-length', type=int, default=1000,
+parser.add_argument('--max-episode-length', type=int, default=100,
                     help='maximum length of an episode (default: 1000000)')
+
 parser.add_argument('--natural-language', dest='natural-language', action='store_true',
                     help='')
 parser.set_defaults(natural_language=True)  # todo
+parser.add_argument('--render', dest='render', action='store_true', help='render env with cv2')
+parser.set_defaults(render=True)
 parser.add_argument('--no-shared', default=False,
                     help='use an optimizer without shared momentum.')
-parser.add_argument('-sync', '--synchronous', dest='synchronous', action='store_true',
-                    help='Useful for debugging purposes e.g. import pdb; pdb.set_trace(). '
-                         'Overwrites args.num_processes as everything is in main thread. '
-                         '1 train() function is run and no test()')
-parser.add_argument('-async', '--asynchronous', dest='synchronous', action='store_false')
-parser.set_defaults(synchronous=True)
 
-# Atari arguments. Good example of keeping code modular and allowing algorithms to run everywhere
-parser.add_argument('--atari', dest='atari', action='store_true',
-                    help='Run atari env instead with name below instead of ai2thor')
-parser.add_argument('--atari-render', dest='atari_render', action='store_true',
-                    help='Render atari')
-parser.add_argument('--atari-env-name', default='PongDeterministic-v4',
-                    help='environment to train on (default: PongDeterministic-v4)')
-#
-parser.set_defaults(atari=False)
-parser.set_defaults(atari_render=False)
-
-
-# def train(rank, args, shared_model, counter, lock, optimizer=None):
 def train(robot: cozmo.robot.Robot):
     rank = 0
     torch.manual_seed(args.seed + rank)
 
-    # if args.atari:
-    #     env = create_atari_env(args.atari_env_name)
-    # else:
-    #     env = AI2ThorEnv(config_dict=args.config_dict)
-
-    env = AnkiEnv(robot, natural_language=args.natural_language)
+    env = AnkiEnv(robot, natural_language=args.natural_language, render=args.render)
     env.seed(args.seed + rank)
 
     if args.natural_language:
@@ -245,22 +218,12 @@ def train(robot: cozmo.robot.Robot):
 
 
 if __name__ == '__main__':
-    os.environ['OMP_NUM_THREADS'] = '1'
-    os.environ['CUDA_VISIBLE_DEVICES'] = ""
-
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
-    # args.config_dict = {'max_episode_length': args.max_episode_length,
-    #                     'natural_language': args.natural_language} # todo maybe this
-    # env = AnkiEnv(config_dict=args.config_dict)
-    # env = AnkiEnv()
-    # args.frame_dim = env.config['resolution'][-1]
     args.frame_dim = 80
-    processes = []
     counter = mp.Value('i', 0)
     lock = mp.Lock()
-    # cozmo.run_program(train)  # doesn't pass robot correctly
     try:
         cozmo.connect(train)
     except KeyboardInterrupt as e:

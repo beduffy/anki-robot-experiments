@@ -1,3 +1,7 @@
+import matplotlib
+matplotlib.use('agg')
+import matplotlib.pyplot as plt
+
 import cv2
 from PIL import Image
 import cozmo
@@ -14,6 +18,60 @@ STEPS_IN_EPISODE = 100
 # IMAGE_DIM_INPUT = (80, 60)
 IMAGE_DIM_INPUT = (80, 80)  # will stretch a bit but for A3C
 
+
+def create_image_with_bounding_boxes(raw_state, detections):
+    # Create plot
+    plt.figure()
+    fig, ax = plt.subplots(1)
+    ax.imshow(raw_state)
+
+    # The amount of padding that was added
+    pad_x = max(raw_state.shape[0] - raw_state.shape[1], 0) * (opt.img_size / max(raw_state.shape))
+    pad_y = max(raw_state.shape[1] - raw_state.shape[0], 0) * (opt.img_size / max(raw_state.shape))
+    # Image height and width after padding is removed
+    unpad_h = opt.img_size - pad_y
+    unpad_w = opt.img_size - pad_x
+
+    # Draw bounding boxes and labels of detections
+    if detections is not None:
+        unique_labels = detections[:, -1].cpu().unique()
+        n_cls_preds = len(unique_labels)
+        bbox_colors = random.sample(colors, n_cls_preds)
+        for x1, y1, x2, y2, conf, cls_conf, cls_pred in detections:
+            print('\t+ Label: %s, Conf: %.5f' % (classes[int(cls_pred)], cls_conf.item()))
+            print('projected coordinates: x1, y1, x2, y2: {:.2f}, {:.2f}, {:.2f}, {:.2f}'.format(x1, y1, x2, y2))
+
+            # Rescale coordinates to original dimensions
+            box_h = ((y2 - y1) / unpad_h) * raw_state.shape[0]
+            box_w = ((x2 - x1) / unpad_w) * raw_state.shape[1]
+            y1 = ((y1 - pad_y // 2) / unpad_h) * raw_state.shape[0]
+            x1 = ((x1 - pad_x // 2) / unpad_w) * raw_state.shape[1]
+
+            print('original coordinates: x1, y1, x2, y2: {:.2f}, {:.2f}, {:.2f}, {:.2f}'.format(x1, y1, x1 + box_w, y1 + box_h))
+
+            color = bbox_colors[int(np.where(unique_labels == int(cls_pred))[0])]
+            # Create a Rectangle patch
+            bbox = patches.Rectangle((x1, y1), box_w, box_h, linewidth=2,
+                                     edgecolor=color,
+                                     facecolor='none')
+            # Add the bbox to the plot
+            ax.add_patch(bbox)
+            # Add label
+            plt.text(x1, y1, s=classes[int(cls_pred)], color='white', verticalalignment='top',
+                     bbox={'color': color, 'pad': 0})
+
+    # Save generated image with detections
+    plt.axis('off')
+    plt.gca().xaxis.set_major_locator(NullLocator())
+    plt.gca().yaxis.set_major_locator(NullLocator())
+
+    fig.canvas.draw()
+
+    # Now we can save it to a numpy array.
+    data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep='')
+    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+
+    return data
 
 class AnkiEnv(gym.Env):
     def __init__(self, robot, natural_language=False, degrees_rotate=NUM_DEGREES_ROTATE, render=False):
@@ -95,6 +153,11 @@ class AnkiEnv(gym.Env):
 
         self.step_num = 0
         state = self.get_raw_image()
+        self.prev_state = state
+        if self.render:
+            cv2.imshow('Current raw image', state)
+            cv2.waitKey(1)
+
         state_preprocessed = cv2.resize(state, IMAGE_DIM_INPUT)
         state_preprocessed = np.moveaxis(state_preprocessed, 2, 0)
         if self.natural_language:
@@ -120,6 +183,8 @@ class AnkiEnv(gym.Env):
         88 - 322
         122-288: 80 range in middle of screen with midpoints
         raw_img: numpy array
+
+        :returns: reward and detections
         """
 
         detections = detect_on_numpy_img(raw_img)
@@ -129,20 +194,19 @@ class AnkiEnv(gym.Env):
                     # if int(cls_pred.item()) == self.current_object_idx and x1.item() > 88 and x2.item() < 322:  # roughly in middle
                     midpoint_x = (x1.item() + x2.item()) / 2.0  # better and more accurate
                     if midpoint_x > 108 and midpoint_x < 288:  # roughly in middle
-
                         if int(cls_pred.item()) == self.current_object_idx:
-                            return 10
+                            return 10, detections
                         else:
                             # if wrong object looked at
-                            return -5
+                            return -5, detections
                 else:  # much easier, just have to see cup
                     if int(cls_pred.item()) == self.current_object_idx:
-                        return True
-        return 0
+                        return 10, detections
+        return 0, detections
 
     def get_reward(self, img, movement_reward=-0.01):  # todo maybe env variable
         reward = movement_reward
-        object_in_centre = self.target_object_in_centre_of_screen(img)
+        object_in_centre, detections = self.target_object_in_centre_of_screen(img)
         if self.step_num >= STEPS_IN_EPISODE - 1:
             done = True
             reward = -10
@@ -159,7 +223,7 @@ class AnkiEnv(gym.Env):
             print('Looked at wrong object. Reward: {}'.format(reward))
             self.robot.say_text('awww').wait_for_completed()
 
-        return reward, done
+        return reward, done, detections
 
     def get_raw_image(self, resize=False, size=IMAGE_DIM_INPUT, return_PIL=False):
         """
@@ -189,9 +253,16 @@ class AnkiEnv(gym.Env):
             self.robot.turn_in_place(degrees(-self.degrees_rotate)).wait_for_completed()
 
         raw_state = self.get_raw_image()  # todo find best place to resize
-        reward, done = self.get_reward(raw_state)
+        reward, done, detections = self.get_reward(raw_state)
 
         self.step_num += 1
+
+        if self.render:
+            bbox_image = create_image_with_bounding_boxes(raw_state, detections)
+            cv2.imshow('Current raw image', raw_state)
+            cv2.waitKey(1)
+            cv2.imshow('Current bounding box image', bbox_image)
+            cv2.waitKey(1)
 
         state_preprocessed = cv2.resize(raw_state, IMAGE_DIM_INPUT)
         state_preprocessed = np.moveaxis(state_preprocessed, 2, 0)
