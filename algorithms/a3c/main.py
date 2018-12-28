@@ -22,6 +22,7 @@ import torch
 import torch.multiprocessing as mp
 import torch.optim as optim
 import torch.nn.functional as F
+from tensorboardX import SummaryWriter
 import cozmo
 
 from anki_env import AnkiEnv
@@ -61,6 +62,14 @@ parser.add_argument('--render', dest='render', action='store_true', help='render
 parser.set_defaults(render=True)
 parser.add_argument('--no-shared', default=False,
                     help='use an optimizer without shared momentum.')
+
+def save_checkpoint(fp, state):
+    # , experiment_id, filename, is_best=False
+    # fp = '/home/beduffy/all_projects/ai2thor-testing/experiments/{}/{}'.format(experiment_id, filename)
+    torch.save(state, fp)
+    print('Saved model to path: {}'.format(fp))
+    # if is_best:
+    #     shutil.copyfile(filepath, 'model_best.pth.tar')
 
 def train(robot: cozmo.robot.Robot):
     rank = 0
@@ -102,6 +111,7 @@ def train(robot: cozmo.robot.Robot):
     start = time.time()
     total_length = 0
     episode_length = 0
+    episode_number = 0
     num_backprops = 0
     while True:
         # Sync with the shared model
@@ -122,6 +132,11 @@ def train(robot: cozmo.robot.Robot):
         for step in range(args.num_steps):
             episode_length += 1
             total_length += 1
+            if total_length > 0 and total_length % 100 == 0:
+                fp = 'checkpoints/checkpoint_total_length_{}.pth.tar'.format(total_length)
+                save_checkpoint(fp, {'total_length': total_length, 'state_dict': model.state_dict(),
+                     'optimizer': optimizer.state_dict(),
+                     })
             if args.natural_language:
                 tx = torch.from_numpy(np.array([episode_length])).long()
                 value, logit, (hx, cx) = model((state.unsqueeze(0).float(),
@@ -146,6 +161,7 @@ def train(robot: cozmo.robot.Robot):
                 counter.value += 1
 
             if done:
+                episode_number += 1
                 episode_length = 0
                 total_length -= 1
                 total_reward_for_episode = sum(all_rewards_in_episode)
@@ -162,6 +178,12 @@ def train(robot: cozmo.robot.Robot):
                 print('Episode Over. Total Length: {}. Total reward for episode: {}'.format(
                                             total_length,  total_reward_for_episode))
                 print('Step no: {}. total length: {}'.format(episode_length, total_length))
+                writer.add_scalar('episode_lengths', episode_length, episode_number)
+                writer.add_scalar('episode_total_rewards', total_reward_for_episode, episode_number)
+                # writer.add_image('Image', torch.from_numpy(state).permute(2, 0, 1), episode_num)
+                # writer.add_image('Image', state, episode_number)  # was state
+                writer.add_text('Text', 'text logged at step: {}. '
+                                        'Episode num {}'.format(episode_length, episode_number), episode_length)
 
             state = torch.from_numpy(state)
             values.append(value)
@@ -210,6 +232,8 @@ def train(robot: cozmo.robot.Robot):
 
         optimizer.zero_grad()
 
+        writer.add_scalar('policy_loss', policy_loss.item(), episode_number)
+        writer.add_scalar('value_loss', value_loss.item(), episode_number)
         (policy_loss + args.value_loss_coef * value_loss).backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
 
@@ -224,10 +248,14 @@ if __name__ == '__main__':
     args.frame_dim = 80
     counter = mp.Value('i', 0)
     lock = mp.Lock()
+    writer = SummaryWriter(comment='A3C')
     try:
         cozmo.connect(train)
     except KeyboardInterrupt as e:
         pass
     except cozmo.ConnectionError as e:
         sys.exit("A connection error occurred: %s" % e)
+    finally:
+        writer.export_scalars_to_json("./all_scalars.json")
+        writer.close()
 
