@@ -162,8 +162,6 @@ def train(robot: cozmo.robot.Robot):
 
             if done:
                 episode_number += 1
-                episode_length = 0
-                total_length -= 1
                 total_reward_for_episode = sum(all_rewards_in_episode)
                 episode_total_rewards_list.append(total_reward_for_episode)
                 all_rewards_in_episode = []
@@ -177,13 +175,16 @@ def train(robot: cozmo.robot.Robot):
                     instruction_idx = torch.from_numpy(instruction_idx).view(1, -1)
                 print('Episode Over. Total Length: {}. Total reward for episode: {}'.format(
                                             total_length,  total_reward_for_episode))
-                print('Step no: {}. total length: {}'.format(episode_length, total_length))
+                print('Episode number: {}. Step no: {}. total length: {}'.format(episode_number, episode_length, total_length))
                 writer.add_scalar('episode_lengths', episode_length, episode_number)
+                # todo do running mean reward
                 writer.add_scalar('episode_total_rewards', total_reward_for_episode, episode_number)
                 # writer.add_image('Image', torch.from_numpy(state).permute(2, 0, 1), episode_num)
                 # writer.add_image('Image', state, episode_number)  # was state
                 writer.add_text('Text', 'text logged at step: {}. '
                                         'Episode num {}'.format(episode_length, episode_number), episode_length)
+                episode_length = 0
+                total_length -= 1  # so no off by 1 errors. hmm shouldn't be necessary
 
             state = torch.from_numpy(state)
             values.append(value)
@@ -216,7 +217,6 @@ def train(robot: cozmo.robot.Robot):
         values.append(R)
         policy_loss = 0
         value_loss = 0
-        # import pdb;pdb.set_trace() # good place to breakpoint to see training cycle
         gae = torch.zeros(1, 1)
         for i in reversed(range(len(rewards))):
             R = args.gamma * R + rewards[i]
@@ -242,13 +242,19 @@ def train(robot: cozmo.robot.Robot):
 
 
 if __name__ == '__main__':
+    # todo visualise A3C conv layers or attention
+    # todo make cozmo to charge himself so we can train all night?
+    # todo pretrain with imagenet?
+    # todo try binary image input with objects in white (or segmented)
+    # todo print action probabilities
     args = parser.parse_args()
-
     torch.manual_seed(args.seed)
     args.frame_dim = 80
     counter = mp.Value('i', 0)
     lock = mp.Lock()
-    writer = SummaryWriter(comment='A3C')
+    #sys.exit() # todo if args.checkpoint_path
+    writer = SummaryWriter(comment='A3C', log_dir='runs/purge')
+
     try:
         cozmo.connect(train)
     except KeyboardInterrupt as e:

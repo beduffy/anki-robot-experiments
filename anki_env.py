@@ -39,7 +39,7 @@ def create_image_with_bounding_boxes(raw_state, detections):
         bbox_colors = random.sample(colors, n_cls_preds)
         for x1, y1, x2, y2, conf, cls_conf, cls_pred in detections:
             print('\t+ Label: %s, Conf: %.5f' % (classes[int(cls_pred)], cls_conf.item()))
-            print('projected coordinates: x1, y1, x2, y2: {:.2f}, {:.2f}, {:.2f}, {:.2f}'.format(x1, y1, x2, y2))
+            # print('projected coordinates: x1, y1, x2, y2: {:.2f}, {:.2f}, {:.2f}, {:.2f}'.format(x1, y1, x2, y2))
 
             # Rescale coordinates to original dimensions
             box_h = ((y2 - y1) / unpad_h) * raw_state.shape[0]
@@ -47,7 +47,7 @@ def create_image_with_bounding_boxes(raw_state, detections):
             y1 = ((y1 - pad_y // 2) / unpad_h) * raw_state.shape[0]
             x1 = ((x1 - pad_x // 2) / unpad_w) * raw_state.shape[1]
 
-            print('original coordinates: x1, y1, x2, y2: {:.2f}, {:.2f}, {:.2f}, {:.2f}'.format(x1, y1, x1 + box_w, y1 + box_h))
+            # print('original coordinates: x1, y1, x2, y2: {:.2f}, {:.2f}, {:.2f}, {:.2f}'.format(x1, y1, x1 + box_w, y1 + box_h))
 
             color = bbox_colors[int(np.where(unique_labels == int(cls_pred))[0])]
             # Create a Rectangle patch
@@ -145,6 +145,7 @@ class AnkiEnv(gym.Env):
             print('rotating Cozmo {} degrees'.format(random_degrees))
             self.robot.turn_in_place(degrees(random_degrees)).wait_for_completed()
         else:
+            print('Setting Cozmo back to original pose')
             self.robot.go_to_pose(Pose(0, 0, 0, angle_z=degrees(0.0)), relative_to_robot=False).wait_for_completed()
             # self.last_reset_pose = self.robot.pose
             # needed to go back to the same starting position
@@ -177,7 +178,7 @@ class AnkiEnv(gym.Env):
 
     def target_object_in_centre_of_screen(self, raw_img, dead_centre=True):
         """
-        Use YOLOv3 PyTorch
+        Using YOLOv3 PyTorch
         image is 416x416. centre is 208, 208. Solid centre of screen object is around ~?
         108 - 308? hard to get bowl in centre. maybe only for cup
         88 - 322
@@ -193,7 +194,7 @@ class AnkiEnv(gym.Env):
                 if dead_centre:
                     # if int(cls_pred.item()) == self.current_object_idx and x1.item() > 88 and x2.item() < 322:  # roughly in middle
                     midpoint_x = (x1.item() + x2.item()) / 2.0  # better and more accurate
-                    if midpoint_x > 108 and midpoint_x < 288:  # roughly in middle
+                    if midpoint_x > 122 and midpoint_x < 288:  # roughly in middle
                         if int(cls_pred.item()) == self.current_object_idx:
                             return 10, detections
                         else:
@@ -246,10 +247,10 @@ class AnkiEnv(gym.Env):
 
     def step(self, action):
         if action == 0:
-            print('Turning left')
+            # print('Turning left')
             self.robot.turn_in_place(degrees(self.degrees_rotate)).wait_for_completed()
         elif action == 1:
-            print('Turning right')
+            # print('Turning right')
             self.robot.turn_in_place(degrees(-self.degrees_rotate)).wait_for_completed()
 
         raw_state = self.get_raw_image()  # todo find best place to resize
