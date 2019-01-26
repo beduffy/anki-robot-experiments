@@ -13,6 +13,8 @@ from __future__ import print_function
 import time
 import argparse
 import os
+import uuid
+import glob
 import sys
 # sys.path.append('../..')
 sys.path.append('/home/beduffy/all_projects/cozmo-anki-experiments/')
@@ -54,7 +56,12 @@ parser.add_argument('--num-steps', type=int, default=20,
                     help='number of forward steps in A3C (default: 20)')
 parser.add_argument('--max-episode-length', type=int, default=100,
                     help='maximum length of an episode (default: 1000000)')
-
+parser.add_argument('--checkpoint-freq', type=int, default=100, help='how often to checkpoint')
+parser.add_argument('--total-length', type=int, default=0, help='initial length if resuming')
+parser.add_argument('--episode-number', type=int, default=0, help='episode-number passed if resuming')
+parser.add_argument('-eid', '--experiment-id', default=uuid.uuid4(),
+                    help='random or chosen guid for folder creation for plots and checkpointing. '
+                         'If experiment taken, will resume training!')
 parser.add_argument('--natural-language', dest='natural-language', action='store_true',
                     help='')
 parser.set_defaults(natural_language=True)  # todo
@@ -63,9 +70,9 @@ parser.set_defaults(render=True)
 parser.add_argument('--no-shared', default=False,
                     help='use an optimizer without shared momentum.')
 
-def save_checkpoint(fp, state):
-    # , experiment_id, filename, is_best=False
-    # fp = '/home/beduffy/all_projects/ai2thor-testing/experiments/{}/{}'.format(experiment_id, filename)
+args = parser.parse_args()
+
+def save_checkpoint(fp, state, is_best=False):
     torch.save(state, fp)
     print('Saved model to path: {}'.format(fp))
     # if is_best:
@@ -84,6 +91,40 @@ def train(robot: cozmo.robot.Robot):
         model = ActorCritic(env.observation_space.shape[0], env.action_space.n, args.frame_dim)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
+
+    # Checkpoint creation/loading below
+    if not os.path.exists(args.experiment_path):
+        print('Creating experiment folder: {} and checkpoint folder: {}'.format(
+            args.experiment_path, args.checkpoint_path))
+        os.makedirs(args.checkpoint_path)
+    else:
+        print('Checkpoints path already exists at path: {}'.format(args.checkpoint_path))
+        checkpoint_paths = glob.glob(os.path.join(args.checkpoint_path, '*'))
+        if checkpoint_paths:
+            # Take checkpoint path with most experience e.g. 2000 from checkpoint_total_length_2000.pth.tar
+            checkpoint_file_name_ints = [int(x.split('/')[-1].split('.pth.tar')[0].split('_')[-1])
+                                         for x in checkpoint_paths]
+            idx_of_latest = checkpoint_file_name_ints.index(max(checkpoint_file_name_ints))
+            checkpoint_to_load = checkpoint_paths[idx_of_latest]
+            print('Loading latest checkpoint: {}'.format(checkpoint_to_load))
+
+            if os.path.isfile(checkpoint_to_load):
+                print("=> loading checkpoint '{}'".format(checkpoint_to_load))
+                checkpoint = torch.load(checkpoint_to_load)
+                args.total_length = checkpoint['total_length']
+                args.episode_number = checkpoint['episode_number']
+                model.load_state_dict(checkpoint['state_dict'])
+                optimizer.load_state_dict(
+                    checkpoint['optimizer'])  # todo check if overwrites learning rate. probably does
+
+                for param_group in optimizer.param_groups:
+                    print('Learning rate: ', param_group['lr'])  # oh it doesn't work?
+
+                print("=> loaded checkpoint '{}' (total_length {})"
+                      .format(checkpoint_to_load, checkpoint['total_length']))
+        else:
+            print('No checkpoint to load')
+        # todo have choice of checkpoint as well? args.resume could override the above
 
     model.train()
 
@@ -109,9 +150,9 @@ def train(robot: cozmo.robot.Robot):
     v_losses = []
 
     start = time.time()
-    total_length = 0
+    total_length = args.total_length if args.total_length is not None else 0
+    episode_number = args.episode_number if args.episode_number is not None else 0
     episode_length = 0
-    episode_number = 0
     num_backprops = 0
     while True:
         # Sync with the shared model
@@ -132,11 +173,16 @@ def train(robot: cozmo.robot.Robot):
         for step in range(args.num_steps):
             episode_length += 1
             total_length += 1
-            if total_length > 0 and total_length % 100 == 0:
-                fp = 'checkpoints/checkpoint_total_length_{}.pth.tar'.format(total_length)
-                save_checkpoint(fp, {'total_length': total_length, 'state_dict': model.state_dict(),
-                     'optimizer': optimizer.state_dict(),
+            if total_length > 0 and total_length % args.checkpoint_freq == 0:
+                fp = os.path.join(args.checkpoint_path, 'checkpoint_total_length_{}.pth.tar'.format(total_length))
+                save_checkpoint(fp,
+                     {
+                         'total_length': total_length,
+                         'episode_number': episode_number,
+                         'state_dict': model.state_dict(),
+                         'optimizer': optimizer.state_dict(),
                      })
+                print('Saved checkpoint to: {}'.format(fp))
             if args.natural_language:
                 tx = torch.from_numpy(np.array([episode_length])).long()
                 value, logit, (hx, cx) = model((state.unsqueeze(0).float(),
@@ -247,13 +293,16 @@ if __name__ == '__main__':
     # todo pretrain with imagenet?
     # todo try binary image input with objects in white (or segmented)
     # todo print action probabilities
-    args = parser.parse_args()
     torch.manual_seed(args.seed)
     args.frame_dim = 80
+    args.experiment_path = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'
+                                                                     , '..', 'experiments',
+                                                                     str(args.experiment_id))))
+    args.checkpoint_path = os.path.join(args.experiment_path, 'checkpoints')
+    args.tensorboard_path = os.path.join(args.experiment_path, 'tensorboard_logs')
     counter = mp.Value('i', 0)
     lock = mp.Lock()
-    #sys.exit() # todo if args.checkpoint_path
-    writer = SummaryWriter(comment='A3C', log_dir='runs/purge')
+    writer = SummaryWriter(comment='A3C', log_dir=args.tensorboard_path)
 
     try:
         cozmo.connect(train)

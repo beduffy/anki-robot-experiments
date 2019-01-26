@@ -11,7 +11,7 @@ from gym import error, spaces
 from gym.utils import seeding
 
 #from PyTorch_YOLOv3 import detect_function
-from PyTorch_YOLOv3.detect_function import *  # needed to load in YOLO model
+from PyTorch_YOLOv3.detect_function import *  # needed to startup YOLO model but slightly dangerous import
 
 NUM_DEGREES_ROTATE = 10
 STEPS_IN_EPISODE = 100
