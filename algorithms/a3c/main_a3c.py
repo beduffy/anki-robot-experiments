@@ -91,10 +91,9 @@ def train(robot: cozmo.robot.Robot):
         model = ActorCritic(env.observation_space.shape[0], env.action_space.n, args.frame_dim)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-
     # Checkpoint creation/loading below
-    if not os.path.exists(args.experiment_path):
-        print('Creating experiment folder: {} and checkpoint folder: {}'.format(
+    if not os.path.exists(args.checkpoint_path):
+        print('Tensorboard created experiment folder: {} and checkpoint folder made here: {}'.format(
             args.experiment_path, args.checkpoint_path))
         os.makedirs(args.checkpoint_path)
     else:
@@ -113,6 +112,8 @@ def train(robot: cozmo.robot.Robot):
                 checkpoint = torch.load(checkpoint_to_load)
                 args.total_length = checkpoint['total_length']
                 args.episode_number = checkpoint['episode_number']
+                print('Values from checkpoint: total_length: {}. episode_number: {}'.format(
+                    checkpoint['total_length'], checkpoint['episode_number']))
                 model.load_state_dict(checkpoint['state_dict'])
                 optimizer.load_state_dict(
                     checkpoint['optimizer'])  # todo check if overwrites learning rate. probably does
