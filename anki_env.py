@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import cv2
 from PIL import Image
 import cozmo
-from cozmo.util import degrees, distance_mm, speed_mmps, Pose
+from cozmo.util import degrees, distance_mm, speed_mmps, Pose, Angle
 import gym
 from gym import error, spaces
 from gym.utils import seeding
@@ -14,6 +14,7 @@ from gym.utils import seeding
 from PyTorch_YOLOv3.detect_function import *  # needed to startup YOLO model but slightly dangerous import
 
 NUM_DEGREES_ROTATE = 10
+MAX_SPEED = 1.0
 STEPS_IN_EPISODE = 100
 # IMAGE_DIM_INPUT = (80, 60)
 IMAGE_DIM_INPUT = (80, 80)  # will stretch a bit but for A3C
@@ -74,16 +75,20 @@ def create_image_with_bounding_boxes(raw_state, detections):
     return data
 
 class AnkiEnv(gym.Env):
-    def __init__(self, robot, natural_language=False, degrees_rotate=NUM_DEGREES_ROTATE, render=False):
+    def __init__(self, robot, natural_language=False, degrees_rotate=NUM_DEGREES_ROTATE,
+                 render=False, continuous_actions=False):
         self.robot = robot
-        self.robot = self.robot.wait_for_robot()
-        self.robot.enable_device_imu(True, True, True)
-        # Turn on image receiving by the camera
-        self.robot.camera.image_stream_enabled = True
+        if self.robot:
+            self.robot = self.robot.wait_for_robot()
+            self.robot.enable_device_imu(True, True, True)
+            # Turn on image receiving by the camera
+            self.robot.camera.image_stream_enabled = True
 
-        self.robot.set_lift_height(0.0).wait_for_completed()
-        self.robot.set_head_angle(degrees(-.0)).wait_for_completed()
-        time.sleep(1)
+            self.robot.set_lift_height(0.0).wait_for_completed()
+            self.robot.set_head_angle(degrees(-.0)).wait_for_completed()
+            time.sleep(1)
+        else:
+            print('Robot is None can\'t control')
 
         self.step_num = 0
         self.degrees_rotate = degrees_rotate
@@ -99,7 +104,11 @@ class AnkiEnv(gym.Env):
                                             shape=(channels, self.config['resolution'][0],
                                                    self.config['resolution'][1]))#,
                                             # dtype=np.uint8)
-        self.action_space = spaces.Discrete(2)
+        self.continuous_actions = continuous_actions
+        if not self.continuous_actions:
+            self.action_space = spaces.Discrete(2)
+        else:
+            self.action_space = spaces.Box(low=-1, high=1, shape=(2, ))
 
         self.natural_language = natural_language
         if self.natural_language:
@@ -246,12 +255,25 @@ class AnkiEnv(gym.Env):
         return np.asarray(image)
 
     def step(self, action):
-        if action == 0:
-            # print('Turning left')
-            self.robot.turn_in_place(degrees(self.degrees_rotate)).wait_for_completed()
-        elif action == 1:
-            # print('Turning right')
-            self.robot.turn_in_place(degrees(-self.degrees_rotate)).wait_for_completed()
+        if not self.continuous_actions:
+            if action == 0:
+                # print('Turning left')
+                self.robot.turn_in_place(degrees(self.degrees_rotate)).wait_for_completed()
+            elif action == 1:
+                # print('Turning right')
+                self.robot.turn_in_place(degrees(-self.degrees_rotate)).wait_for_completed()
+        else:
+            # action in range [-1, +1]
+            speed = abs(action) * MAX_SPEED
+            neg_pos = 90 if action > 0.0 else -90
+            print('Step_num: {}. continuous action: {}. Speed {}. Direction: {}'.format(self.step_num,
+                                                                                        action,
+                                                                                        speed,
+                                                                                        neg_pos))
+            robot_action = self.robot.turn_in_place(degrees(neg_pos), speed=Angle(speed), in_parallel=True)
+            time.sleep(0.2)  # is any sleep necessary and will continuous move too fast
+            self.robot.stop_all_motors()  # this might make the pause too long, todo try one or other
+            self.robot.abort_all_actions()
 
         raw_state = self.get_raw_image()  # todo find best place to resize
         reward, done, detections = self.get_reward(raw_state)
