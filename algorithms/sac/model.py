@@ -52,7 +52,7 @@ class NormalizedActions(gym.ActionWrapper):
         action = 2 * (action - low) / (high - low) - 1
         action = np.clip(action, low, high)
 
-        return actions
+        return action
 
 
 class ValueNetwork(nn.Module):
@@ -93,10 +93,11 @@ class SoftQNetwork(nn.Module):
 
 
 class PolicyNetwork(nn.Module):
-    def __init__(self, num_inputs, num_actions, hidden_size, init_w=3e-3, log_std_min=-20,
+    def __init__(self, num_inputs, num_actions, hidden_size, device, init_w=3e-3, log_std_min=-20,
                  log_std_max=2):
         super(PolicyNetwork, self).__init__()
 
+        self.device = device
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
 

@@ -2,7 +2,7 @@
 Adapted from: https://github.com/higgsfield/RL-Adventure-2/blob/master/7.soft%20actor-critic.ipynb
 Example of use:
 `cd algorithms/sac`
-`python main.py`
+`python main_sac.py`
 
 Runs SAC on our custom environment for Cozmo (robot by anki)
 """
@@ -16,6 +16,7 @@ import sys
 # sys.path.append('../..')
 sys.path.append('/home/beduffy/all_projects/cozmo-anki-experiments/')
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
@@ -66,17 +67,11 @@ parser.set_defaults(render=True)
 parser.add_argument('--no-shared', default=False,
                     help='use an optimizer without shared momentum.')
 
-
-# from IPython.display import clear_output
-import matplotlib.pyplot as plt
-# %matplotlib inline
-def plot(frame_idx, rewards):
-    clear_output(True)
-    plt.figure(figsize=(20,5))
-    plt.subplot(131)
+def plot_episode_rewards(frame_idx, rewards):
     plt.title('frame %s. reward: %s' % (frame_idx, rewards[-1]))
     plt.plot(rewards)
-    plt.show()
+    plt.draw()
+    plt.pause(0.001)
 
 
 def soft_q_update(batch_size,
@@ -136,6 +131,8 @@ def soft_q_update(batch_size,
 if __name__ == '__main__':
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
+    plt.ion()
+    plt.show()
     env = NormalizedActions(gym.make("Pendulum-v0"))
 
     action_dim = env.action_space.shape[0]
@@ -146,7 +143,7 @@ if __name__ == '__main__':
     target_value_net = ValueNetwork(state_dim, hidden_dim).to(device)
 
     soft_q_net = SoftQNetwork(state_dim, action_dim, hidden_dim).to(device)
-    policy_net = PolicyNetwork(state_dim, action_dim, hidden_dim).to(device)
+    policy_net = PolicyNetwork(state_dim, action_dim, hidden_dim, device).to(device)
 
     for target_param, param in zip(target_value_net.parameters(), value_net.parameters()):
         target_param.data.copy_(param.data)
@@ -190,7 +187,8 @@ if __name__ == '__main__':
             env.render()
 
             if frame_idx % 1000 == 0:
-                plot(frame_idx, rewards)
+                print('Frame idx: {}. Episode num: {}'.format(frame_idx, len(rewards)))
+                plot_episode_rewards(frame_idx, rewards)
 
             if done:
                 break

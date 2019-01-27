@@ -1,9 +1,8 @@
 """
 Adapted from: https://github.com/ikostrikov/pytorch-a3c/blob/master/main.py
-The main file needed within a3c. Runs of the train and test functions from their respective files.
 Example of use:
 `cd algorithms/a3c`
-`python main.py`
+`python main_a3c.py`
 
 Runs A3C on our custom environment for Cozmo (robot by anki) with only 1 process (so A2C essentially).
 """
