@@ -12,15 +12,19 @@ from __future__ import print_function
 import time
 import argparse
 import os
+import uuid
 import sys
 # sys.path.append('../..')
 sys.path.append('/home/beduffy/all_projects/cozmo-anki-experiments/')
 
+# import matplotlib
+# matplotlib.use('agg') # nothing showing if this here todo
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.multiprocessing as mp
 import torch.nn.functional as F
 from torch.distributions import Normal
 from tensorboardX import SummaryWriter
@@ -58,14 +62,23 @@ parser.add_argument('--num-steps', type=int, default=20,
                     help='number of forward steps in A3C (default: 20)')
 parser.add_argument('--max-episode-length', type=int, default=100,
                     help='maximum length of an episode (default: 1000000)')
-
+parser.add_argument('--checkpoint-freq', type=int, default=100, help='how often to checkpoint')
+parser.add_argument('--total-length', type=int, default=0, help='initial length if resuming')
+parser.add_argument('--episode-number', type=int, default=0, help='episode-number passed if resuming')
+parser.add_argument('-eid', '--experiment-id', default=uuid.uuid4(),
+                    help='random or chosen guid for folder creation for plots and checkpointing. '
+                         'If experiment taken, will resume training!')
 parser.add_argument('--natural-language', dest='natural-language', action='store_true',
                     help='')
 parser.set_defaults(natural_language=True)  # todo
+parser.add_argument('--pendulum', dest='pendulum', action='store_true',
+                    help='')
+parser.set_defaults(pendulum=False)  # todo
 parser.add_argument('--render', dest='render', action='store_true', help='render env with cv2')
 parser.set_defaults(render=True)
 parser.add_argument('--no-shared', default=False,
                     help='use an optimizer without shared momentum.')
+args = parser.parse_args()
 
 def plot_episode_rewards(frame_idx, rewards):
     plt.title('frame %s. reward: %s' % (frame_idx, rewards[-1]))
@@ -127,14 +140,74 @@ def soft_q_update(batch_size,
             target_param.data * (1.0 - soft_tau) + param.data * soft_tau
         )
 
+def train_sac(robot: cozmo.robot.Robot):
+    """
+    Traiin SAC for max_frames on cozmo or pendulum
+    """
+    if args.pendulum:
+        env = NormalizedActions(gym.make("Pendulum-v0"))
+    else:
+        env = AnkiEnv(robot, natural_language=args.natural_language, continuous_actions=True,
+                      render=args.render)  # todo have to create environment twice due to globals and robot argument, how to pass in?
+
+    max_frames = 40000
+    max_steps = 500
+    frame_idx = 0
+    rewards = []
+    batch_size = 128
+
+    while frame_idx < max_frames:
+        state = env.reset()
+        episode_reward = 0
+
+        for step in range(max_steps):
+            action = policy_net.get_action(state)
+            next_state, reward, done, _ = env.step(action)
+
+            replay_buffer.push(state, action, reward, next_state, done)
+            if len(replay_buffer) > batch_size:
+                soft_q_update(batch_size)
+
+            state = next_state
+            episode_reward += reward
+            frame_idx += 1
+
+            if args.render and args.pendulum:
+                env.render()
+
+            if frame_idx % 1000 == 0:
+                print('Frame idx: {}. Episode num: {}'.format(frame_idx, len(rewards)))
+                plot_episode_rewards(frame_idx, rewards)
+
+            if done:
+                break
+
+        rewards.append(episode_reward)
 
 if __name__ == '__main__':
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
     plt.ion()
     plt.show()
-    env = NormalizedActions(gym.make("Pendulum-v0"))
 
+    torch.manual_seed(args.seed)
+    args.frame_dim = 80
+    # args.experiment_path = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'
+    #                                                                  , '..', 'experiments',
+    #                                                                  str(args.experiment_id))))
+    # args.checkpoint_path = os.path.join(args.experiment_path, 'checkpoints')
+    # args.tensorboard_path = os.path.join(args.experiment_path, 'tensorboard_logs')
+    # writer = SummaryWriter(comment='SAC', log_dir=args.tensorboard_path)
+
+    # setup environment
+    if args.pendulum:
+        # pendulum mode
+        env = NormalizedActions(gym.make("Pendulum-v0"))
+    else:
+        env = AnkiEnv(None, natural_language=args.natural_language,
+                      render=args.render, continuous_actions=True)
+
+    # setup agent
     action_dim = env.action_space.shape[0]
     state_dim = env.observation_space.shape[0]
     hidden_dim = 256
@@ -162,35 +235,19 @@ if __name__ == '__main__':
     replay_buffer_size = 1000000
     replay_buffer = ReplayBuffer(replay_buffer_size)
 
-    max_frames = 40000
-    max_steps = 500
-    frame_idx = 0
-    rewards = []
-    batch_size = 128
+    # todo currently need to create environment twice due to cozmo argument to train_sac
+    del env
 
-    while frame_idx < max_frames:
-        state = env.reset()
-        episode_reward = 0
-
-        for step in range(max_steps):
-            action = policy_net.get_action(state)
-            next_state, reward, done, _ = env.step(action)
-
-            replay_buffer.push(state, action, reward, next_state, done)
-            if len(replay_buffer) > batch_size:
-                soft_q_update(batch_size)
-
-            state = next_state
-            episode_reward += reward
-            frame_idx += 1
-
-            env.render()
-
-            if frame_idx % 1000 == 0:
-                print('Frame idx: {}. Episode num: {}'.format(frame_idx, len(rewards)))
-                plot_episode_rewards(frame_idx, rewards)
-
-            if done:
-                break
-
-        rewards.append(episode_reward)
+    if args.pendulum:
+        train_sac(None)
+    else:
+        try:
+            cozmo.connect(train_sac)
+        except KeyboardInterrupt as e:
+            pass
+        except cozmo.ConnectionError as e:
+            sys.exit("A connection error occurred: %s" % e)
+        finally:
+            pass
+            # writer.export_scalars_to_json("./all_scalars.json")
+            # writer.close()
